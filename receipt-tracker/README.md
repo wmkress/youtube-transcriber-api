@@ -19,7 +19,7 @@ A minimal, installable web app for tracking home-improvement and repair expenses
 
 Everything is stored locally in the browser (IndexedDB) on the device in use. There is no server or account. Clearing the browser's website data deletes the records, so use **Back Up All Data** regularly and keep the file somewhere safe (e.g. iCloud Drive). Data does not sync between devices automatically; use backup/restore to move it.
 
-Receipt text recognition downloads the recognition engine from `cdn.jsdelivr.net` on first use (about 5 MB, then cached), and the PDF report downloads jsPDF from `cdnjs.cloudflare.com` the first time a report is made. Images and reports are produced on the device and are not uploaded anywhere; a report leaves the device only when it is shared or emailed.
+Receipt text recognition (Tesseract.js) and PDF generation (jsPDF) are bundled in `vendor/`, so the app makes no outside network requests and works offline. Images and reports are produced on the device and are not uploaded anywhere; a report leaves the device only when it is shared or emailed.
 
 ## Running it
 
@@ -44,3 +44,4 @@ python3 -m http.server 8000
 | `app.js` | Storage, views, receipt parsing, exports |
 | `sw.js` | Offline caching |
 | `manifest.webmanifest`, `icons/` | Home-screen install |
+| `vendor/` | Tesseract.js 5.1.1 (Apache-2.0) with English data, jsPDF 2.5.1 and jsPDF-AutoTable 3.8.2 (MIT) |

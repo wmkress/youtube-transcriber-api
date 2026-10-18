@@ -1,9 +1,14 @@
 // Receipts — rental property expense tracker.
 // All data is stored on-device in IndexedDB. No server, no account.
 
-const TESSERACT_URL = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
-const JSPDF_URL = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
-const AUTOTABLE_URL = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js';
+// Libraries are bundled in vendor/ so the app works offline and never calls out to a CDN.
+const vendor = path => new URL(`vendor/${path}`, location.href).href;
+const TESSERACT_URL = vendor('tesseract/tesseract.min.js');
+const JSPDF_URL = vendor('jspdf/jspdf.umd.min.js');
+const AUTOTABLE_URL = vendor('jspdf/jspdf.plugin.autotable.min.js');
+
+// When hosted as a claude.ai artifact, file saves go through the viewer's save prompt.
+const inArtifact = typeof window.claude?.use === 'function';
 
 const CATEGORIES = [
   { id: 'repair', label: 'Repair & Maintenance' },
@@ -384,7 +389,7 @@ async function deleteProperty() {
   const msg = items.length
     ? `Delete “${p.name}” and its ${plural(items.length, 'expense')}? This cannot be undone.`
     : `Delete “${p.name}”?`;
-  if (!confirm(msg)) return;
+  if (!(await ask(msg, 'Delete'))) return;
   for (const e of items) {
     await idb.del('entries', e.id);
     await idb.del('photos', e.id);
@@ -589,7 +594,7 @@ async function saveEntry() {
 
 async function deleteEntry() {
   const id = state.sheet.draft.id;
-  if (!confirm('Delete this expense? This cannot be undone.')) return;
+  if (!(await ask('Delete this expense? This cannot be undone.', 'Delete'))) return;
   await idb.del('entries', id);
   await idb.del('photos', id);
   state.entries = state.entries.filter(e => e.id !== id);
@@ -663,7 +668,11 @@ async function readReceipt(blob) {
   try {
     await loadScript(TESSERACT_URL);
     const { Tesseract } = window;
-    const { data } = await Tesseract.recognize(blob, 'eng');
+    const { data } = await Tesseract.recognize(blob, 'eng', {
+      workerPath: vendor('tesseract/worker.min.js'),
+      corePath: vendor('tesseract'),
+      langPath: vendor('tesseract'),
+    });
     if (state.sheet !== s) return;
     const found = parseReceipt(data.text || '');
     let filled = 0;
@@ -743,7 +752,14 @@ export function parseReceipt(text) {
 
 // ---------- Export / backup ----------
 
-function download(filename, blob) {
+async function download(filename, blob) {
+  if (inArtifact) {
+    const downloads = await window.claude.use('downloads');
+    if (!downloads) { toast('Saving files isn’t available here'); return; }
+    try { await downloads.save({ filename, data: blob }); }
+    catch (err) { if (err?.code !== 'declined') toast('Couldn’t save the file'); }
+    return;
+  }
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -892,11 +908,11 @@ async function openReport() {
   if (!entriesFor(year).length) { toast(`No expenses in ${year}`); return; }
   toast('Preparing report…');
   let pdf;
-  try { pdf = await buildPdf(year); } catch { toast('Report unavailable — check your connection'); return; }
+  try { pdf = await buildPdf(year); } catch { toast('Couldn’t create the report. Try again.'); return; }
   const name = `rental-expenses-${year}`;
   const file = new File([pdf.blob], `${name}.pdf`, { type: 'application/pdf' });
   const csv = new File([csvBlob(year)], `${name}.csv`, { type: 'text/csv' });
-  const canShare = !!navigator.canShare?.({ files: [file] });
+  const canShare = !inArtifact && !!navigator.canShare?.({ files: [file] });
   const size = file.size > 1e6 ? `${(file.size / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(file.size / 1e3))} KB`;
 
   $('#toast').classList.remove('show');
@@ -914,12 +930,15 @@ async function openReport() {
         ${canShare ? `
           <li><button class="cell link" data-action="report-share">Email or Share PDF</button></li>
           <li><button class="cell link" data-action="report-share-all">Email PDF + Spreadsheet</button></li>` : ''}
-        <li><button class="cell link" data-action="report-save">Save PDF</button></li>
-        <li><button class="cell link" data-action="report-preview">Preview</button></li>
+        <li><button class="cell link" data-action="report-save">${canShare ? 'Save PDF' : 'Save or Email PDF'}</button></li>
+        ${canShare ? '' : '<li><button class="cell link" data-action="report-save-csv">Save Spreadsheet (CSV)</button></li>'}
+        ${inArtifact ? '' : '<li><button class="cell link" data-action="report-preview">Preview</button></li>'}
       </ul>
       <p class="section-foot">${canShare
         ? 'Choose Mail in the share sheet to send the report as an attachment. The spreadsheet option attaches a CSV that opens in Excel or Numbers.'
-        : 'This browser can’t share files directly. Save the PDF, then attach it to an email.'}</p>
+        : inArtifact
+          ? 'In the Claude app on iPhone, saving opens the share sheet. Choose Mail to send the report as an attachment.'
+          : 'This browser can’t share files directly. Save the PDF, then attach it to an email.'}</p>
     </div>`);
 }
 
@@ -953,7 +972,7 @@ async function restore(file) {
     toast('Not a valid backup file');
     return;
   }
-  if (!confirm(`Restore ${plural(data.properties.length, 'property')} and ${plural(data.entries.length, 'expense')}? Matching records on this device will be replaced.`)) return;
+  if (!(await ask(`Restore ${plural(data.properties.length, 'property')} and ${plural(data.entries.length, 'expense')}? Matching records on this device will be replaced.`, 'Restore', false))) return;
   for (const p of data.properties) await idb.put('properties', p);
   for (const e of data.entries) await idb.put('entries', e);
   for (const ph of data.photos || []) {
@@ -963,6 +982,31 @@ async function restore(file) {
   await load();
   render();
   toast('Backup restored');
+}
+
+// ---------- Alert ----------
+
+// In-page replacement for confirm(), which some hosts (such as embedded frames) suppress.
+function ask(message, action, destructive = true) {
+  return new Promise(resolve => {
+    const root = document.createElement('div');
+    root.className = 'alert-layer';
+    root.innerHTML = `<div class="alert" role="alertdialog" aria-modal="true">
+      <p>${esc(message)}</p>
+      <div class="alert-buttons">
+        <button data-answer="no">Cancel</button>
+        <button data-answer="yes" class="${destructive ? 'destructive' : 'primary'}">${esc(action)}</button>
+      </div></div>`;
+    root.addEventListener('click', e => {
+      const b = e.target.closest('[data-answer]');
+      if (!b) return;
+      e.stopPropagation();
+      root.remove();
+      resolve(b.dataset.answer === 'yes');
+    });
+    document.body.appendChild(root);
+    $('[data-answer=no]', root).focus();
+  });
 }
 
 // ---------- Toast ----------
@@ -1003,7 +1047,8 @@ const actions = {
   'report-share': () => shareReport([state.sheet.file]),
   'report-share-all': () => shareReport([state.sheet.file, state.sheet.csv]),
   'report-save': () => download(state.sheet.file.name, state.sheet.file),
-  'report-preview': () => window.open(state.sheet.url, '_blank'),
+  'report-save-csv': () => download(state.sheet.csv.name, state.sheet.csv),
+  'report-preview': () => { if (!window.open(state.sheet.url, '_blank')) toast('Preview isn’t available here. Save the PDF instead.'); },
   'backup': () => backup(),
   'restore': () => $('#restore-input').click(),
 };

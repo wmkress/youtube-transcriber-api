@@ -1,5 +1,5 @@
 // Offline support: network first, fall back to the cached app shell.
-const CACHE = 'receipts-v2';
+const CACHE = 'receipts-v3';
 const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'manifest.webmanifest', 'icons/icon.svg', 'icons/icon-180.png'];
 
 self.addEventListener('install', e => {
@@ -17,9 +17,7 @@ self.addEventListener('activate', e => {
 self.addEventListener('fetch', e => {
   const req = e.request;
   if (req.method !== 'GET') return;
-  const sameOrigin = new URL(req.url).origin === location.origin;
-  const isLib = /cdn\.jsdelivr\.net\/npm\/tesseract|cdnjs\.cloudflare\.com\/ajax\/libs\/jspdf/.test(req.url);
-  if (!sameOrigin && !isLib) return;
+  if (new URL(req.url).origin !== location.origin) return;
   e.respondWith(
     fetch(req)
       .then(res => {
