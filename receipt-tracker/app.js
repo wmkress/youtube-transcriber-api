@@ -2,6 +2,8 @@
 // All data is stored on-device in IndexedDB. No server, no account.
 
 const TESSERACT_URL = 'https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js';
+const JSPDF_URL = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+const AUTOTABLE_URL = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js';
 
 const CATEGORIES = [
   { id: 'repair', label: 'Repair & Maintenance' },
@@ -195,8 +197,8 @@ function overviewView() {
 
     <h2 class="section-title"><span>Tax Records</span></h2>
     <ul class="list">
+      <li><button class="cell link" data-action="share-report">Email ${state.year} Report (PDF)</button></li>
       <li><button class="cell link" data-action="export-csv">Export ${state.year} Spreadsheet (CSV)</button></li>
-      <li><button class="cell link" data-action="print-report">Print ${state.year} Report with Receipts</button></li>
       <li><button class="cell link" data-action="backup">Back Up All Data</button></li>
       <li><button class="cell link" data-action="restore">Restore from Backup</button></li>
     </ul>
@@ -309,6 +311,7 @@ function openSheet(html) {
 function closeSheet() {
   const s = state.sheet;
   if (s?.photoUrl) URL.revokeObjectURL(s.photoUrl);
+  if (s?.url) setTimeout(() => URL.revokeObjectURL(s.url), 60_000);
   state.sheet = null;
   document.body.style.overflow = '';
   const layer = $('#sheet-root .sheet-layer');
@@ -639,16 +642,18 @@ const blobToDataUrl = blob => new Promise((resolve, reject) => {
 
 // ---------- Receipt text recognition ----------
 
-let tesseractPromise;
-function loadTesseract() {
-  tesseractPromise ??= new Promise((resolve, reject) => {
-    const s = document.createElement('script');
-    s.src = TESSERACT_URL;
-    s.onload = () => resolve(window.Tesseract);
-    s.onerror = () => { tesseractPromise = null; reject(new Error('OCR unavailable')); };
-    document.head.appendChild(s);
-  });
-  return tesseractPromise;
+const scripts = new Map();
+function loadScript(src) {
+  if (!scripts.has(src)) {
+    scripts.set(src, new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = src;
+      s.onload = resolve;
+      s.onerror = () => { scripts.delete(src); s.remove(); reject(new Error(`Could not load ${src}`)); };
+      document.head.appendChild(s);
+    }));
+  }
+  return scripts.get(src);
 }
 
 async function readReceipt(blob) {
@@ -656,7 +661,8 @@ async function readReceipt(blob) {
   s.ocr = 'running';
   updatePhotoArea();
   try {
-    const Tesseract = await loadTesseract();
+    await loadScript(TESSERACT_URL);
+    const { Tesseract } = window;
     const { data } = await Tesseract.recognize(blob, 'eng');
     if (state.sheet !== s) return;
     const found = parseReceipt(data.text || '');
@@ -750,12 +756,12 @@ function download(filename, blob) {
 
 const csvCell = v => { const s = String(v ?? ''); return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
 
-function exportCsv() {
-  const list = entriesFor(state.year).slice().sort((a, b) => {
+function csvBlob(year) {
+  const list = entriesFor(year).slice().sort((a, b) => {
     const pa = propertyById(a.propertyId)?.name || '', pb = propertyById(b.propertyId)?.name || '';
     return pa.localeCompare(pb) || a.date.localeCompare(b.date);
   });
-  if (!list.length) { toast(`No expenses in ${state.year}`); return; }
+  if (!list.length) return null;
   const rows = [['Date', 'Property', 'Address', 'Vendor', 'Description', 'Type', 'Amount', 'Receipt', 'Notes']];
   for (const e of list) {
     const p = propertyById(e.propertyId);
@@ -766,61 +772,164 @@ function exportCsv() {
     const items = list.filter(e => e.propertyId === p.id);
     if (items.length) rows.push(['', `${p.name} total`, '', '', '', '', (sumCents(items) / 100).toFixed(2), '', '']);
   }
-  rows.push(['', `${state.year} total`, '', '', '', '', (sumCents(list) / 100).toFixed(2), '', '']);
+  rows.push(['', `${year} total`, '', '', '', '', (sumCents(list) / 100).toFixed(2), '', '']);
   const csv = rows.map(r => r.map(csvCell).join(',')).join('\r\n');
-  download(`rental-expenses-${state.year}.csv`, new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' }));
+  return new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
 }
 
-async function printReport() {
-  const list = entriesFor(state.year).slice().sort((a, b) => a.date.localeCompare(b.date));
-  if (!list.length) { toast(`No expenses in ${state.year}`); return; }
-  toast('Preparing report…');
-  const urls = [];
+function exportCsv() {
+  const blob = csvBlob(state.year);
+  if (!blob) { toast(`No expenses in ${state.year}`); return; }
+  download(`rental-expenses-${state.year}.csv`, blob);
+}
+
+// Builds a letter-size PDF: summary, per-property detail, then one receipt image per page.
+async function buildPdf(year) {
+  await loadScript(JSPDF_URL);
+  await loadScript(AUTOTABLE_URL);
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: 'pt', format: 'letter' });
+  const W = doc.internal.pageSize.getWidth();
+  const H = doc.internal.pageSize.getHeight();
+  const M = 48;
+
+  const list = entriesFor(year).slice().sort((a, b) => a.date.localeCompare(b.date));
   const props = state.properties.filter(p => list.some(e => e.propertyId === p.id));
 
-  const summary = `<table>
-    <thead><tr><th>Property</th>${CATEGORIES.map(c => `<th class="num">${c.label}</th>`).join('')}<th class="num">Total</th></tr></thead>
-    <tbody>
-      ${props.map(p => {
-        const items = list.filter(e => e.propertyId === p.id);
-        return `<tr><td>${esc(p.name)}</td>${CATEGORIES.map(c => `<td class="num">${money(sumCents(items.filter(e => e.category === c.id)))}</td>`).join('')}<td class="num">${money(sumCents(items))}</td></tr>`;
-      }).join('')}
-      <tr class="total"><td>Total</td>${CATEGORIES.map(c => `<td class="num">${money(sumCents(list.filter(e => e.category === c.id)))}</td>`).join('')}<td class="num">${money(sumCents(list))}</td></tr>
-    </tbody></table>`;
+  const table = (startY, head, body, foot, amountCol) => {
+    doc.autoTable({
+      startY, head: [head], body, foot: foot ? [foot] : undefined, showFoot: 'lastPage',
+      theme: 'striped', margin: { left: M, right: M, bottom: M + 12 },
+      styles: { font: 'helvetica', fontSize: 9, cellPadding: 5, textColor: [28, 28, 30], overflow: 'linebreak' },
+      headStyles: { fillColor: [255, 255, 255], textColor: [110, 110, 115], fontStyle: 'bold', lineWidth: { bottom: 0.75 }, lineColor: [200, 200, 205] },
+      footStyles: { fillColor: [255, 255, 255], textColor: [0, 0, 0], fontStyle: 'bold', lineWidth: { top: 0.75 }, lineColor: [0, 0, 0] },
+      alternateRowStyles: { fillColor: [246, 246, 248] },
+      columnStyles: { [amountCol]: { halign: 'right', cellWidth: 72 } },
+      didParseCell: d => { if (d.column.index === amountCol) d.cell.styles.halign = 'right'; },
+    });
+    return doc.lastAutoTable.finalY;
+  };
+  const heading = (text, y, size = 13) => {
+    if (y > H - 120) { doc.addPage(); y = M; }
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(size);
+    doc.setTextColor(0, 0, 0);
+    doc.text(text, M, y);
+    return y + 10;
+  };
 
-  const detail = props.map(p => {
+  // Title and summary
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(20);
+  doc.text(`Rental Property Expenses - ${year}`, M, M + 8);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(10);
+  doc.setTextColor(110, 110, 115);
+  doc.text(`${plural(list.length, 'expense')} across ${plural(props.length, 'property')} · Total ${money(sumCents(list))}`, M, M + 26);
+
+  let y = heading('Summary by Property', M + 60);
+  y = table(y, ['Property', 'Address', 'Expenses', 'Total'],
+    props.map(p => { const items = list.filter(e => e.propertyId === p.id); return [p.name, p.address || '', String(items.length), money(sumCents(items))]; }),
+    ['Total', '', String(list.length), money(sumCents(list))], 3);
+
+  y = heading('Summary by Type', y + 28);
+  y = table(y, ['Type', 'Expenses', 'Total'],
+    CATEGORIES.map(c => ({ c, items: list.filter(e => e.category === c.id) })).filter(x => x.items.length)
+      .map(({ c, items }) => [c.label, String(items.length), money(sumCents(items))]),
+    ['Total', String(list.length), money(sumCents(list))], 2);
+
+  // Detail per property
+  for (const p of props) {
     const items = list.filter(e => e.propertyId === p.id);
-    return `<h2>${esc(p.name)}${p.address ? ` — ${esc(p.address)}` : ''}</h2>
-      <table>
-        <thead><tr><th>Date</th><th>Vendor</th><th>Description</th><th>Type</th><th>Receipt</th><th class="num">Amount</th></tr></thead>
-        <tbody>
-          ${items.map(e => `<tr><td>${fmtDate(e.date)}</td><td>${esc(e.vendor)}</td><td>${esc(e.description)}${e.notes ? `<br><small>${esc(e.notes)}</small>` : ''}</td><td>${categoryLabel(e.category)}</td><td>${e.hasPhoto ? 'Attached' : 'None'}</td><td class="num">${money(e.amount)}</td></tr>`).join('')}
-          <tr class="total"><td colspan="5">Total</td><td class="num">${money(sumCents(items))}</td></tr>
-        </tbody>
-      </table>`;
-  }).join('');
+    y = heading(p.address ? `${p.name} - ${p.address}` : p.name, y + 32);
+    y = table(y, ['Date', 'Vendor', 'Description', 'Type', 'Receipt', 'Amount'],
+      items.map(e => [fmtDate(e.date), e.vendor, e.notes ? `${e.description}\n${e.notes}` : e.description, categoryLabel(e.category), e.hasPhoto ? 'Attached' : 'None', money(e.amount)]),
+      ['Total', '', '', '', '', money(sumCents(items))], 5);
+  }
 
-  const receipts = [];
+  // Receipt images, one per page
   for (const e of list.filter(x => x.hasPhoto)) {
     const rec = await idb.get('photos', e.id);
     if (!rec?.blob) continue;
-    const url = URL.createObjectURL(rec.blob);
-    urls.push(url);
-    receipts.push(`<div class="receipt"><strong>${fmtDate(e.date)} · ${esc(propertyById(e.propertyId)?.name)} · ${esc(e.vendor || e.description)} · ${money(e.amount)}</strong><img src="${url}" alt=""></div>`);
+    let img, dataUrl;
+    try {
+      const small = await resizeImage(rec.blob, 1400, 0.72);
+      dataUrl = await blobToDataUrl(small);
+      img = await loadImage(small);
+    } catch { continue; }
+    doc.addPage();
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(11);
+    doc.setTextColor(0, 0, 0);
+    doc.text(`${fmtDate(e.date)} · ${propertyById(e.propertyId)?.name || ''} · ${money(e.amount)}`, M, M);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(9);
+    doc.setTextColor(110, 110, 115);
+    doc.text([e.vendor, e.description].filter(Boolean).join(' - ') || categoryLabel(e.category), M, M + 14);
+    const top = M + 28, maxW = W - 2 * M, maxH = H - top - M - 12;
+    const scale = Math.min(maxW / img.naturalWidth, maxH / img.naturalHeight);
+    const w = img.naturalWidth * scale, h = img.naturalHeight * scale;
+    doc.addImage(dataUrl, 'JPEG', M + (maxW - w) / 2, top, w, h);
   }
 
-  const root = $('#print');
-  root.innerHTML = `
-    <h1>Rental Property Expenses — ${state.year}</h1>
-    <div class="meta">Generated ${new Date().toLocaleDateString('en-US', { dateStyle: 'long' })} · ${plural(list.length, 'expense')}</div>
-    <h2>Summary</h2>${summary}
-    ${detail}
-    ${receipts.length ? `<div class="page-break"></div><h2>Receipts</h2>${receipts.join('')}` : ''}`;
+  // Footer on every page
+  const pages = doc.getNumberOfPages();
+  const generated = `Generated ${new Date().toLocaleDateString('en-US', { dateStyle: 'long' })}`;
+  for (let i = 1; i <= pages; i++) {
+    doc.setPage(i);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.setTextColor(140, 140, 145);
+    doc.text(generated, M, H - 24);
+    doc.text(`Page ${i} of ${pages}`, W - M, H - 24, { align: 'right' });
+  }
 
-  await Promise.all($$('img', root).map(img => img.decode().catch(() => {})));
-  const cleanup = () => { root.innerHTML = ''; urls.forEach(u => URL.revokeObjectURL(u)); window.removeEventListener('afterprint', cleanup); };
-  window.addEventListener('afterprint', cleanup);
-  window.print();
+  return { blob: doc.output('blob'), pages };
+}
+
+async function openReport() {
+  const year = state.year;
+  if (!entriesFor(year).length) { toast(`No expenses in ${year}`); return; }
+  toast('Preparing report…');
+  let pdf;
+  try { pdf = await buildPdf(year); } catch { toast('Report unavailable — check your connection'); return; }
+  const name = `rental-expenses-${year}`;
+  const file = new File([pdf.blob], `${name}.pdf`, { type: 'application/pdf' });
+  const csv = new File([csvBlob(year)], `${name}.csv`, { type: 'text/csv' });
+  const canShare = !!navigator.canShare?.({ files: [file] });
+  const size = file.size > 1e6 ? `${(file.size / 1e6).toFixed(1)} MB` : `${Math.max(1, Math.round(file.size / 1e3))} KB`;
+
+  $('#toast').classList.remove('show');
+  state.sheet = { kind: 'report', year, file, csv, url: URL.createObjectURL(file) };
+  // Sharing needs a fresh tap, so the PDF is prepared first and shared from this sheet.
+  openSheet(`
+    <div class="sheet-nav"><button data-action="sheet-cancel">Done</button><h2>${year} Report</h2><span></span></div>
+    <div class="sheet-body">
+      <div class="report-card">
+        <div class="report-icon">PDF</div>
+        <div class="cell-title">${name}.pdf</div>
+        <div class="cell-sub">${plural(pdf.pages, 'page')} · ${size}</div>
+      </div>
+      <ul class="list">
+        ${canShare ? `
+          <li><button class="cell link" data-action="report-share">Email or Share PDF</button></li>
+          <li><button class="cell link" data-action="report-share-all">Email PDF + Spreadsheet</button></li>` : ''}
+        <li><button class="cell link" data-action="report-save">Save PDF</button></li>
+        <li><button class="cell link" data-action="report-preview">Preview</button></li>
+      </ul>
+      <p class="section-foot">${canShare
+        ? 'Choose Mail in the share sheet to send the report as an attachment. The spreadsheet option attaches a CSV that opens in Excel or Numbers.'
+        : 'This browser can’t share files directly. Save the PDF, then attach it to an email.'}</p>
+    </div>`);
+}
+
+async function shareReport(files) {
+  const s = state.sheet;
+  try {
+    await navigator.share({ files, title: `Rental Property Expenses ${s.year}`, text: `Rental property expense report for ${s.year}.` });
+  } catch (err) {
+    if (err?.name !== 'AbortError') toast('Sharing failed — try Save PDF');
+  }
 }
 
 async function backup() {
@@ -890,7 +999,11 @@ const actions = {
   'photo-remove': () => removePhoto(),
   'photo-view': () => state.sheet?.photoUrl && openViewer(state.sheet.photoUrl),
   'export-csv': () => exportCsv(),
-  'print-report': () => printReport(),
+  'share-report': () => openReport(),
+  'report-share': () => shareReport([state.sheet.file]),
+  'report-share-all': () => shareReport([state.sheet.file, state.sheet.csv]),
+  'report-save': () => download(state.sheet.file.name, state.sheet.file),
+  'report-preview': () => window.open(state.sheet.url, '_blank'),
   'backup': () => backup(),
   'restore': () => $('#restore-input').click(),
 };

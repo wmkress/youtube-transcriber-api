@@ -621,23 +621,30 @@ button.cell:active, .cell.tappable:active { background: var(--fill); }
 
 .toast.show { opacity: 1; transform: translate(-50%, 0); }
 
-/* ---------- Print report ---------- */
+/* ---------- Report ---------- */
 
-.print-root { display: none; }
+.report-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  margin: 8px 16px 24px;
+  padding: 24px 16px;
+  background: var(--card);
+  border-radius: var(--radius);
+  text-align: center;
+}
 
-@media print {
-  body { background: #fff; color: #000; font-size: 11pt; }
-  .view, .tabbar, #sheet-root, .toast { display: none !important; }
-  .print-root { display: block; }
-  .print-root h1 { font-size: 18pt; margin: 0 0 4pt; }
-  .print-root h2 { font-size: 13pt; margin: 18pt 0 6pt; }
-  .print-root .meta { color: #555; margin-bottom: 12pt; }
-  .print-root table { width: 100%; border-collapse: collapse; margin-bottom: 8pt; }
-  .print-root th, .print-root td { text-align: left; padding: 4pt 6pt; border-bottom: 0.5pt solid #ccc; vertical-align: top; }
-  .print-root th { font-weight: 600; border-bottom: 1pt solid #000; }
-  .print-root td.num, .print-root th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .print-root tr.total td { font-weight: 700; border-top: 1pt solid #000; border-bottom: 0; }
-  .print-root .receipt { break-inside: avoid; page-break-inside: avoid; margin: 0 0 16pt; }
-  .print-root .receipt img { max-width: 100%; max-height: 8.5in; display: block; margin-top: 4pt; }
-  .print-root .page-break { break-before: page; page-break-before: always; }
+.report-icon {
+  width: 56px;
+  height: 72px;
+  margin-bottom: 10px;
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+  background: var(--red);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
 }

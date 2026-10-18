@@ -10,8 +10,8 @@ A minimal, installable web app for tracking home-improvement and repair expenses
 - **Yearly running totals** — total for each tax year, broken down by property and by expense type.
 - **Expense types** — Repair & Maintenance, Capital Improvement, Appliance & Equipment, Supplies, Contractor & Labor, Other.
 - **Tax records**
-  - Export a year to CSV (one row per expense, with property and year totals).
-  - Print or save as PDF a year-end report with summary tables and all receipt images.
+  - **Email a year-end PDF report** — summary by property and type, a detail table for each property, and every receipt image (one per page). On iPhone, iPad, and Mac it opens the share sheet; choose Mail to send it as an attachment, optionally with the CSV spreadsheet. It can also be saved to Files or printed.
+  - Export a year to CSV (one row per expense, with property and year totals), which opens in Excel or Numbers.
 - **Backup / restore** — a single JSON file that includes all properties, expenses, and receipt photos.
 - Works offline after first load; supports light and dark mode.
 
@@ -19,7 +19,7 @@ A minimal, installable web app for tracking home-improvement and repair expenses
 
 Everything is stored locally in the browser (IndexedDB) on the device in use. There is no server or account. Clearing the browser's website data deletes the records, so use **Back Up All Data** regularly and keep the file somewhere safe (e.g. iCloud Drive). Data does not sync between devices automatically; use backup/restore to move it.
 
-Receipt text recognition downloads the recognition engine from `cdn.jsdelivr.net` on first use (about 5 MB, then cached). Images are processed on the device and are not uploaded.
+Receipt text recognition downloads the recognition engine from `cdn.jsdelivr.net` on first use (about 5 MB, then cached), and the PDF report downloads jsPDF from `cdnjs.cloudflare.com` the first time a report is made. Images and reports are produced on the device and are not uploaded anywhere; a report leaves the device only when it is shared or emailed.
 
 ## Running it
 
