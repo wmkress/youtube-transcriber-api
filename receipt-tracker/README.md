@@ -33,7 +33,9 @@ python3 -m http.server 8000
 # open http://localhost:8000
 ```
 
-**On a phone:** host the `receipt-tracker/` folder on any static host (GitHub Pages, Netlify, Cloudflare Pages, Vercel static). Then in Safari, tap **Share → Add to Home Screen** to install it as an app.
+**Hosted:** the app is published with GitHub Pages at https://wmkress.github.io/youtube-transcriber-api/. The workflow `.github/workflows/receipt-tracker-pages.yml` redeploys it whenever `receipt-tracker/` changes on `main`, and can also be run by hand from the Actions tab. One-time setup: in the repository's **Settings → Pages**, set **Source** to **GitHub Actions**.
+
+**On a phone:** open the hosted address in Safari, then tap **Share → Add to Home Screen** to install it as an app.
 
 ## Files
 
